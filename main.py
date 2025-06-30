@@ -15,13 +15,16 @@ initialize_app(cred)
 # Create FastAPI app
 app = FastAPI()
 
-# CORS Middleware - allow React frontend
+# Dynamically load allowed origins from .env or Render dashboard
+origins = os.getenv("FRONTEND_URL", "").split(",") + [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000"
+]
+
+# CORS Middleware - allow production + dev frontends
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000"
-    ],
+    allow_origins=[o.strip() for o in origins if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
