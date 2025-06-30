@@ -30,6 +30,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+print("ALLOWED ORIGINS:", [o.strip() for o in origins if o.strip()])
+
 # Import your routers
 from routers import data
 app.include_router(data.router)
