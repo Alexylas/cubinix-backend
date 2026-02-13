@@ -153,105 +153,116 @@ async def generate_summary(user: dict = Depends(get_current_user)):
 
 
 # ─────────────────────── Ask-a-Question endpoint ─────────────────────
-@router.post("/ask", dependencies=[Depends(get_current_user)])
-async def ask_question(
-    request: AskQuestionRequest, user: dict = Depends(get_current_user)
-):
-    doc = (
-        firestore.client()
-        .collection("datasets")
-        .document(user["uid"])
-        .get()
-    )
+@router.post("/ask")
+async def ask_question(request: AskQuestionRequest, user: dict = Depends(get_current_user)):
+    db = firestore.client()
+    doc = db.collection("datasets").document(user["uid"]).get()
     if not doc.exists:
-        raise HTTPException(404, "No data found for user")
+        raise HTTPException(status_code=404, detail="No data found for user")
 
     data = doc.to_dict().get("data", [])
     if not data:
-        raise HTTPException(404, "No data available to query")
+        raise HTTPException(status_code=404, detail="No data available to query")
 
     df = pd.DataFrame(data)
-    q = request.question.lower()
-    # Map dataset columns to canonical business fields
-column_map = {}
+    question = request.question.lower()
 
-for col in df.columns:
-    col_lower = col.lower()
+    # --- helpers ---
+    def find_column(df_local, field_key: str):
+        if "CANONICAL_FIELDS" not in globals():
+            return None
+        keywords = CANONICAL_FIELDS.get(field_key, {}).get("keywords", [])
+        # exact match
+        for c in df_local.columns:
+            if c.lower() in [k.lower() for k in keywords]:
+                return c
+        # partial match
+        for c in df_local.columns:
+            for k in keywords:
+                if k.lower() in c.lower():
+                    return c
+        return None
 
-    for field_key, field_info in CANONICAL_FIELDS.items():
-        if any(keyword in col_lower for keyword in field_info["keywords"]):
-            column_map[field_key] = col
-
-
-    # ───── Logic rules ─────
-    for col in df.columns:
-        if "how many" in q and "contain" in q and col.lower() in q:
-            kw = q.split("contain")[-1].strip(" '\"")
-            count = df[df[col].str.lower().str.contains(kw, na=False)].shape[0]
-            return {
-                "answer": f"🔒 Logic result: {count} rows in '{col}' contain '{kw}'."
-            }
-
-        if "list all unique" in q and col.lower() in q:
-            uniq = df[col].dropna().unique()
-            return {
-                "answer": f"🔒 Logic result: Unique values in '{col}': "
-                f"{', '.join(map(str, uniq))} (Total {len(uniq)})"
-            }
-
-        if any(word in q for word in ["total", "sum"]) and col.lower() in q:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-            return {"answer": f"🔒 Logic result: Total of '{col}': {df[col].sum()}"}
-
-        if "average" in q and col.lower() in q:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-            return {"answer": f"🔒 Logic result: Average of '{col}': {df[col].mean()}"}
-
-    # Year filter
-    if "how many" in q and any(y in q for y in ("2022", "2023", "2024")):
-        year = int([y for y in ("2022", "2023", "2024") if y in q][0])
+    try:
+        # =========================
+        # Existing logic you had
+        # =========================
         for col in df.columns:
-            try:
-                df[col] = pd.to_datetime(df[col], errors="coerce")
-                count = df[df[col].dt.year == year].shape[0]
-                return {"answer": f"🔒 Logic result: {count} rows in year {year}."}
-            except Exception:
-                pass
+            if "how many" in question and "contain" in question and col.lower() in question:
+                keyword = question.split("contain")[-1].strip().strip("'\" ")
+                count = df[df[col].astype(str).str.lower().str.contains(keyword, na=False)].shape[0]
+                return {"answer": f"🔒 Logic result: There are {count} rows in '{col}' that contain '{keyword}'."}
 
-    # Dataset summary
-    if "summary" in q:
-        return {
-            "answer": f"🔒 Logic result: {df.describe(include='all').to_dict()}"
-        }
-# Example: total revenue by sales rep
-if "total" in question and "revenue" in question and "sales" in question:
-    if "revenue" in column_map and "sales_rep" in column_map:
-        revenue_col = column_map["revenue"]
-        rep_col = column_map["sales_rep"]
+            if "list all unique" in question and col.lower() in question:
+                unique_values = df[col].dropna().unique()
+                return {"answer": f"🔒 Logic result: Unique values in '{col}': {', '.join(map(str, unique_values))}. Total: {len(unique_values)}"}
 
-        df[revenue_col] = pd.to_numeric(df[revenue_col], errors="coerce")
+            if ("total" in question or "sum" in question) and col.lower() in question:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                total = df[col].sum()
+                return {"answer": f"🔒 Logic result: Total of '{col}': {total}"}
 
-        result = df.groupby(rep_col)[revenue_col].sum().to_dict()
+            if "average" in question and col.lower() in question:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                avg = df[col].mean()
+                return {"answer": f"🔒 Logic result: Average of '{col}': {avg}"}
 
-        return {
-            "answer": f"🔒 Logic result: Total revenue by sales rep: {result}"
-        }
+        if "how many" in question and any(y in question for y in ["2022", "2023", "2024"]):
+            for col in df.columns:
+                dt = pd.to_datetime(df[col], errors="coerce")
+                if dt.notna().sum() > 0:
+                    year = int([y for y in ["2022", "2023", "2024"] if y in question][0])
+                    count = df[dt.dt.year == year].shape[0]
+                    return {"answer": f"🔒 Logic result: Rows in year {year}: {count}"}
 
-    # ───── Fallback to AI ─────
-    context = "\n".join(map(str, data[:500]))
-    prompt = f"Dataset:\n{context}\n\nUser Question:\n{request.question}"
-    openai.api_key = os.getenv("OPENAI_API_KEY")
-    ai = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a data assistant. Answer based on the dataset.",
-            },
-            {"role": "user", "content": prompt},
-        ],
-    )
-    return {"answer": f"🤖 AI-predicted response:\n{ai.choices[0].message['content']}"}
+        if "summary" in question:
+            summary = df.describe(include='all').to_dict()
+            return {"answer": f"🔒 Logic result: Basic dataset summary: {summary}"}
+
+        # =========================
+        # NEW: Pipeline + Forecast logic
+        # (works only if CANONICAL_FIELDS exists)
+        # =========================
+        amount_col = find_column(df, "amount")
+        stage_col = find_column(df, "stage")
+        close_col = find_column(df, "close_date")
+
+        if (("pipeline" in question) or ("forecast" in question) or ("total pipeline" in question)) and amount_col:
+            df[amount_col] = pd.to_numeric(df[amount_col], errors="coerce")
+            total_amt = df[amount_col].fillna(0).sum()
+            return {"answer": f"🔒 Logic result: Total pipeline amount from '{amount_col}' is {total_amt:,.2f}."}
+
+        if ("by stage" in question or "per stage" in question) and amount_col and stage_col:
+            df[amount_col] = pd.to_numeric(df[amount_col], errors="coerce")
+            grouped = df.groupby(stage_col)[amount_col].sum().sort_values(ascending=False)
+            lines = [f"{idx}: {val:,.2f}" for idx, val in grouped.items()]
+            return {"answer": "🔒 Logic result: Pipeline amount by stage:\n" + "\n".join(lines)}
+
+        if ("closing" in question or "close" in question) and ("this month" in question) and close_col:
+            df[close_col] = pd.to_datetime(df[close_col], errors="coerce")
+            now = pd.Timestamp.utcnow()
+            count = df[(df[close_col].dt.year == now.year) & (df[close_col].dt.month == now.month)].shape[0]
+            return {"answer": f"🔒 Logic result: {count} rows have '{close_col}' in this month."}
+
+        # =========================
+        # Fallback: AI
+        # =========================
+        context = "\n".join([str(row) for row in data[:500]])
+        prompt = f"Dataset:\n{context}\n\nUser Question:\n{request.question}"
+
+        openai.api_key = os.getenv("OPENAI_API_KEY")
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a data assistant. Try your best to answer questions based on the dataset."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        ai_answer = response.choices[0].message['content']
+        return {"answer": f"🤖 AI-predicted response:\n{ai_answer}"}
+
+    except Exception as e:
+        return {"answer": f"❌ Error occurred while processing your request: {str(e)}"}
 
 
 # ───────────────────────────── CSV export ────────────────────────────
