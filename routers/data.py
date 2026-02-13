@@ -172,6 +172,16 @@ async def ask_question(
 
     df = pd.DataFrame(data)
     q = request.question.lower()
+    # Map dataset columns to canonical business fields
+column_map = {}
+
+for col in df.columns:
+    col_lower = col.lower()
+
+    for field_key, field_info in CANONICAL_FIELDS.items():
+        if any(keyword in col_lower for keyword in field_info["keywords"]):
+            column_map[field_key] = col
+
 
     # ───── Logic rules ─────
     for col in df.columns:
@@ -212,6 +222,19 @@ async def ask_question(
     if "summary" in q:
         return {
             "answer": f"🔒 Logic result: {df.describe(include='all').to_dict()}"
+        }
+# Example: total revenue by sales rep
+if "total" in question and "revenue" in question and "sales" in question:
+    if "revenue" in column_map and "sales_rep" in column_map:
+        revenue_col = column_map["revenue"]
+        rep_col = column_map["sales_rep"]
+
+        df[revenue_col] = pd.to_numeric(df[revenue_col], errors="coerce")
+
+        result = df.groupby(rep_col)[revenue_col].sum().to_dict()
+
+        return {
+            "answer": f"🔒 Logic result: Total revenue by sales rep: {result}"
         }
 
     # ───── Fallback to AI ─────
