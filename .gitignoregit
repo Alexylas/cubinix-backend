@@ -1,0 +1,1 @@
+serviceAccountKey.json  .env  add .gitignoregit commit -m "Remove secrets and add .gitignore"git push -u origin main

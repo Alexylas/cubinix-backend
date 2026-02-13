@@ -5,6 +5,52 @@ import csv, io, os, gspread, openai
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 import pandas as pd
+# -----------------------------
+# Canonical Sales / CRM fields
+# -----------------------------
+CANONICAL_FIELDS = {
+    "none": {
+        "label": "— Not mapped —",
+        "keywords": []
+    },
+
+    # Sales / CRM (highest business value)
+    "sales_rep": {
+        "label": "Sales Representative",
+        "keywords": ["rep", "sales_rep", "agent", "salesperson", "owner"]
+    },
+    "customer_name": {
+        "label": "Customer / Account Name",
+        "keywords": ["customer", "client", "account", "company", "name"]
+    },
+    "deal_value": {
+        "label": "Deal Value / Revenue",
+        "keywords": ["amount", "value", "revenue", "price", "total"]
+    },
+    "deal_stage": {
+        "label": "Deal Stage",
+        "keywords": ["stage", "status", "pipeline", "won", "lost", "closed"]
+    },
+    "close_date": {
+        "label": "Close Date",
+        "keywords": ["close", "date", "signed", "order_date"]
+    },
+
+    # Location (future maps & geo analytics)
+    "city": {
+        "label": "City",
+        "keywords": ["city", "town", "location"]
+    },
+    "region": {
+        "label": "State / Province / Region",
+        "keywords": ["state", "province", "region"]
+    },
+    "country": {
+        "label": "Country",
+        "keywords": ["country"]
+    }
+}
+
 
 # ───────────────────────────────────────────────────────────
 # Router WITHOUT global Depends – avoids 400 on CORS preflight
