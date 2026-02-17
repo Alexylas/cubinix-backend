@@ -225,8 +225,8 @@ async def ask_question(request: AskQuestionRequest, user: dict = Depends(get_cur
         # NEW: Pipeline + Forecast logic
         # (works only if CANONICAL_FIELDS exists)
         # =========================
-        amount_col = find_column(df, "amount")
-        stage_col = find_column(df, "stage")
+        amount_col = find_column(df, "deal_value")
+        stage_col = find_column(df, "deal_stage")
         close_col = find_column(df, "close_date")
 
         if (("pipeline" in question) or ("forecast" in question) or ("total pipeline" in question)) and amount_col:
@@ -245,6 +245,31 @@ async def ask_question(request: AskQuestionRequest, user: dict = Depends(get_cur
             now = pd.Timestamp.utcnow()
             count = df[(df[close_col].dt.year == now.year) & (df[close_col].dt.month == now.month)].shape[0]
             return {"answer": f"🔒 Logic result: {count} rows have '{close_col}' in this month."}
+            
+        # =========================
+        # Close Rate Logic
+        # =========================
+        if ("close rate" in question or "win rate" in question or "conversion rate" in question):
+            stage_col = find_column(df, "deal_stage")
+
+            if not stage_col:
+                return {"answer": "❌ Could not detect a Deal Stage column. Please map your stage field."}
+
+            stages = df[stage_col].astype(str).str.lower()
+
+            won = stages.str.contains("won").sum()
+            lost = stages.str.contains("lost").sum()
+
+            total_closed = won + lost
+
+            if total_closed == 0:
+                return {"answer": "🔒 Logic result: No closed deals found (won/lost)."}
+
+            close_rate = (won / total_closed) * 100
+
+            return {
+                "answer": f"🔒 Logic result: Close rate is {close_rate:.2f}% ({won} won / {total_closed} closed deals)."
+            }
 
         # =========================
         # Fallback: AI
@@ -301,9 +326,34 @@ async def top_sales_reps(user: dict = Depends(get_current_user)):
 
     records = doc.to_dict().get("data", [])
     if not records:
-        return {"top_sales_reps": []}
+        return {"top_sales_reps": [], "note": "No records found."}
 
-    return {"top_sales_reps": get_top_sales_reps(records)}
+    # ✅ ADD THIS GUARD RIGHT HERE
+    # Check whether the dataset even looks like CRM data
+    sample_keys = set()
+    for r in records[:25]:
+        sample_keys.update([str(k).lower() for k in r.keys()])
+
+    rep_like = any(x in "".join(sample_keys) for x in ["sales_rep", "sales rep", "rep", "owner", "agent", "salesperson"])
+    value_like = any(x in "".join(sample_keys) for x in ["deal_value", "deal value", "revenue", "amount", "price", "total"])
+
+    if not rep_like or not value_like:
+        return {
+            "top_sales_reps": [],
+            "note": "This feature requires a CRM/Sales dataset with Sales Rep/Owner + Deal Value/Revenue fields. Upload a CRM export or map your columns to canonical fields (sales_rep, deal_value).",
+            "detected_headers_sample": sorted(list(sample_keys))[:20]
+        }
+
+    # ✅ THEN run the actual ranking
+    top = get_top_sales_reps(records)
+
+    if not top:
+        return {
+            "top_sales_reps": [],
+            "note": "No usable Sales Rep + Deal Value pairs found. Check that mapped values exist and Deal Value is numeric."
+        }
+
+    return {"top_sales_reps": top}
 
 # ───────────────────── Google Sheets export ───────────────────────────
 @router.get("/export_google", dependencies=[Depends(get_current_user)])
