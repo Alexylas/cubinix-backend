@@ -5,6 +5,8 @@ import csv, io, os, gspread, openai
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 import pandas as pd
+from services.sales_analytics import get_top_sales_reps
+
 # -----------------------------
 # Canonical Sales / CRM fields
 # -----------------------------
@@ -288,6 +290,20 @@ async def export_csv(user: dict = Depends(get_current_user)):
         headers={"Content-Disposition": "attachment; filename=data_export.csv"},
     )
 
+# ───────────────────── Top Sales Reps Ranking ─────────────────────
+@router.get("/top-sales-reps", dependencies=[Depends(get_current_user)])
+async def top_sales_reps(user: dict = Depends(get_current_user)):
+    db = firestore.client()
+    doc = db.collection("datasets").document(user["uid"]).get()
+
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="No data found")
+
+    records = doc.to_dict().get("data", [])
+    if not records:
+        return {"top_sales_reps": []}
+
+    return {"top_sales_reps": get_top_sales_reps(records)}
 
 # ───────────────────── Google Sheets export ───────────────────────────
 @router.get("/export_google", dependencies=[Depends(get_current_user)])
